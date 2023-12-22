@@ -1,101 +1,110 @@
+### [H-1] Storing the passwords on-chain makes it visible to anyone, and no longer private
 
-# PasswordStore
+**Description:** All data stored on-chain is visible to any one, and can be read directly from the blockchain. The `PasswordStore::s_password` varible is intended to be a private variable and only accessed through the `PasswordStore::getPassword` function, which is intended to be called only by the owner of the contract.
 
-<br/>
-<p align="center">
-<img src="./password-store-logo.png" width="400" alt="password-store">
-</p>
-<br/>
+We show one such method of reading any data off chain below.
 
-A smart contract applicatoin for storing a password. Users should be able to store a password and then retrieve it later. Others should not be able to access the password. 
+**Impact:** Anyone can read the private password, severly breaking the functionality of the protocol.
 
-- [PasswordStore](#passwordstore)
-- [Getting Started](#getting-started)
-  - [Requirements](#requirements)
-  - [Quickstart](#quickstart)
-    - [Optional Gitpod](#optional-gitpod)
-- [Usage](#usage)
-  - [Deploy (local)](#deploy-local)
-  - [Testing](#testing)
-    - [Test Coverage](#test-coverage)
-- [Audit Scope Details](#audit-scope-details)
-  - [Create the audit report](#create-the-audit-report)
 
-# Getting Started
+**Proof of Concept:**(Proof of Code)
 
-## Requirements
+The below test case shows how anyone can read the password directly from the blockchain
 
-- [git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)
-  - You'll know you did it right if you can run `git --version` and you see a response like `git version x.x.x`
-- [foundry](https://getfoundry.sh/)
-  - You'll know you did it right if you can run `forge --version` and you see a response like `forge 0.2.0 (816e00b 2023-03-16T00:05:26.396218Z)`
+1. Create a locally running chain
+ ```Bash
+    make anvil
+```
+2. Deploy the contract to the chain
+```
+    make deploy
+```
+3. Run the storage tool
 
-## Quickstart
+We use `1` because that's the storage slot of `s_password` in the contract.
 
 ```
-git clone https://github.com/Cyfrin/3-passwordstore-audit
-cd 3-passwordstore-audit
-forge build
+cast storage <ADDRESS_HERE> 1 --rpc-url http://127.0.0.1:8545
 ```
 
-### Optional Gitpod
+You'll get an output that looks like this:
 
-If you can't or don't want to run and install locally, you can work with this repo in Gitpod. If you do this, you can skip the `clone this repo` part.
+`0x6d7950617373776f726400000000000000000000000000000000000000000014`
 
-[![Open in Gitpod](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#github.com/Cyfrin/3-passwordstore-audit)
-
-# Usage
-
-## Deploy (local)
-
-1. Start a local node
+You can then parse that hex to a string with:
 
 ```
-make anvil
+cast parse-bytes32-string 0x6d7950617373776f726400000000000000000000000000000000000000000014
 ```
 
-2. Deploy
-
-This will default to your local node. You need to have it running in another terminal in order for it to deploy.
+And get an output of:
 
 ```
-make deploy
+myPassword
 ```
 
-## Testing
+**Recommended Mitigation:** Due to this, the overall architecture of the contract should be rethought. One could encrypt the password off-chain, and then store the encrypted password on-chain. This would require the user to remember another password off-chain to decrypt the password. However, you'd also likely want to remove the view function as you wouldn't want the user to accidentally send a transaction with the password that decrypts your password. 
 
-```
-forge test
-```
 
-### Test Coverage
+### [H-2] `PasswordStore::setPassword`can be callable by anyone 
 
-```
-forge coverage
-```
+**Description:** The `PasswordStore::setPassword` function is set to be an `external` function, however the natspec of the function and overall purpose of the smart contract is that `This function allows only the owner to set a new password.`
 
-and for coverage based testing: 
-
-```
-forge coverage --report debug
+```javascript
+    function setPassword(string memory newPassword) external {
+@>      // @audit - There are no access controls here
+        s_password = newPassword;
+        emit SetNetPassword();
+    }
 ```
 
-# Audit Scope Details
+**Impact:** Anyone can set/change the password of the contract.
 
-- Commit Hash:  2e8f81e263b3a9d18fab4fb5c46805ffc10a9990
-- In Scope:
+**Proof of Concept:** 
+
+Add the following to the `PasswordStore.t.sol` test suite.
+
+<details>
+<summary>Codes</summary>
+
+```javascript
+function test_anyone_can_set_password(address randomAddress) public {
+    vm.prank(randomAddress);
+    string memory expectedPassword = "myNewPassword";
+    passwordStore.setPassword(expectedPassword);
+    vm.prank(owner);
+    string memory actualPassword = passwordStore.getPassword();
+    assertEq(actualPassword, expectedPassword);
+}
 ```
-./src/
-└── PasswordStore.sol
+</details>
+
+**Recommended Mitigation:** Add an access control modifier to the `setPassword` function. 
+
+```javascript
+if (msg.sender != s_owner) {
+    revert PasswordStore__NotOwner();
+}
 ```
-- Solc Version: 0.8.18
-- Chain(s) to deploy contract to: Ethereum
 
-## Create the audit report
+### [I-1] The `PasswordStore::getPassword` natspec indicates a parameter that doesn't exist, causing the natspec to be incorrect
 
-View the [audit-report-templating](https://github.com/Cyfrin/audit-report-templating) repo to install all dependencies. 
+**Description:** 
 
-```bash
-cd audits
-pandoc 2023-09-01-password-store-report.md -o report.pdf --from markdown --template=eisvogel --listings
+```javascript
+    /*
+     * @notice This allows only the owner to retrieve the password.
+@>   * @param newPassword The new password to set.
+     */
+    function getPassword() external view returns (string memory) {
+```
+
+The natspec for the function `PasswordStore::getPassword` indicates it should have a parameter with the signature `getPassword(string)`. However, the actual function signature is `getPassword()`.
+
+**Impact:** The natspec is incorrect.
+
+**Recommended Mitigation:** Remove the incorrect natspec line.
+
+```diff
+-     * @param newPassword The new password to set.
 ```
